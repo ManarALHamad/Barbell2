@@ -1,313 +1,627 @@
-/* Load the Barbell
-   Tap a plate to load it on both sides of the bar. Reach the target weight
-   with the fewest moves before the 30 second timer runs out.
-   Edit LOGO_SRC, TARGETS and the timings below to tune the game. */
 
-(() => {
-  'use strict';
+/* Load the Barbell 3D
+   Three.js + Vanilla JavaScript
+   Para Powerlifting Championship
+*/
 
-  // ---------- CONFIG ----------
-  const LOGO_SRC = 'assets/logo.png';
-  const BAR_WEIGHT = 20;          // kg, empty bar
-  const ROUND_TIME = 30;          // seconds per round
-  const MAX_PER_SIDE = 8;         // plates that fit on one sleeve
-  const TARGETS = [60, 80, 100, 120, 135];  // kg, one per round
-  const NEXT_ROUND_DELAY = 1500;  // ms pause between rounds
+const $ = id => document.getElementById(id);
 
-  // Plate weights in kg, with standard competition colours
-  const PLATES = [
-    { kg: 25,   bg: '#c8102e', fg: '#ffffff', h: 100 },
-    { kg: 20,   bg: '#1f5fbf', fg: '#ffffff', h: 92 },
-    { kg: 15,   bg: '#e3b341', fg: '#0b1626', h: 84 },
-    { kg: 10,   bg: '#2e9d57', fg: '#ffffff', h: 76 },
-    { kg: 5,    bg: '#f4f1e8', fg: '#0b1626', h: 62 },
-    { kg: 2.5,  bg: '#232a33', fg: '#ffffff', h: 50 },
-    { kg: 1.25, bg: '#aab4c2', fg: '#0b1626', h: 40 }
-  ];
-  // ----------------------------
+// ==============================
+// GAME CONFIGURATION
+// ==============================
 
-  const BEST_KEY = 'loadTheBarbell.best';
-  const UNIT = 1.25; // smallest plate, used for the par calculation
+const targets = [60, 80, 100, 120, 135];
 
-  const el = (id) => document.getElementById(id);
-  const roundEl = el('round');
-  const movesEl = el('moves');
-  const totalEl = el('total');
-  const bestEl = el('best');
-  const timeFill = el('timeFill');
-  const timeLeftEl = el('timeLeft');
-  const targetEl = el('target');
-  const currentEl = el('current');
-  const hintEl = el('hint');
-  const leftSide = el('leftSide');
-  const rightSide = el('rightSide');
-  const rack = el('rack');
-  const undoBtn = el('undo');
-  const startModal = el('startModal');
-  const endModal = el('endModal');
+const plates = [
+  [25, 0xc8102e],
+  [20, 0x1f5fbf],
+  [15, 0xe3b341],
+  [10, 0x2e9d57],
+  [5, 0xf4f1e8],
+  [2.5, 0x232a33],
+  [1.25, 0xaab4c2]
+];
 
-  let roundIndex = 0;
-  let stack = [];            // plate weights loaded, one entry per pair
-  let moves = 0;
-  let totalScore = 0;
-  let results = [];
-  let active = false;
-  let timerId = null;
-  let roundStart = 0;
-  let timeLeft = ROUND_TIME;
+let round = 0;
+let stack = [];
+let moves = 0;
+let score = 0;
+let active = false;
+let timer;
+let next;
+let deadline;
+let remaining = 30;
+let results = [];
+let best = 0;
 
-  // Logo with graceful fallback
-  ['logo', 'startLogo', 'endLogo'].forEach((id) => {
-    const img = el(id);
-    img.src = LOGO_SRC;
-    img.addEventListener('error', () => { img.style.display = 'none'; });
-  });
+let visual = () => {};
 
-  // Fewest plate pairs needed to reach a target (the "par" for moves)
-  function parMoves(target) {
-    const perSide = (target - BAR_WEIGHT) / 2;
-    const units = Math.round(perSide / UNIT);
-    const values = PLATES.map((p) => Math.round(p.kg / UNIT));
-    const best = new Array(units + 1).fill(Infinity);
-    best[0] = 0;
-    for (let u = 1; u <= units; u++) {
-      for (const v of values) {
-        if (v <= u && best[u - v] + 1 < best[u]) best[u] = best[u - v] + 1;
+// ==============================
+// PERSONAL BEST
+// ==============================
+
+try {
+  best = Number(
+    localStorage.getItem('loadTheBarbell.best3d')
+  ) || 0;
+} catch {}
+
+$('best').textContent = best;
+
+// ==============================
+// WEIGHT CALCULATION
+// ==============================
+
+const weight = () =>
+  20 + 2 * stack.reduce((a, b) => a + b, 0);
+
+function par(target) {
+  const n = (target - 20) / 2 / 1.25;
+  const d = Array(n + 1).fill(Infinity);
+
+  d[0] = 0;
+
+  for (let i = 1; i <= n; i++) {
+    for (const [kg] of plates) {
+      const v = kg / 1.25;
+
+      if (v <= i) {
+        d[i] = Math.min(d[i], d[i - v] + 1);
       }
     }
-    return best[units];
   }
 
-  const weightOnBar = () => BAR_WEIGHT + 2 * stack.reduce((sum, kg) => sum + kg, 0);
-  const fmt = (kg) => (Number.isInteger(kg) ? String(kg) : kg.toFixed(2).replace(/0$/, '')) + ' kg';
+  return d[n];
+}
 
-  function loadBest() {
-    try { return JSON.parse(localStorage.getItem(BEST_KEY)); } catch (e) { return null; }
-  }
-  function saveBest(score) {
-    try { localStorage.setItem(BEST_KEY, JSON.stringify({ score })); } catch (e) { /* ignore */ }
-  }
-  function showBest() {
-    const best = loadBest();
-    bestEl.textContent = best ? String(best.score) : '–';
-  }
+// ==============================
+// UPDATE GAME INTERFACE
+// ==============================
 
-  function plateNode(p) {
-    const d = document.createElement('div');
-    d.className = 'plate';
-    // Plate heights are pixel sizes. Percentages here resolve against the
-    // sleeve's stretched flex height in some layouts, making plates tower
-    // over the bar and cover the rack and action buttons.
-    d.style.height = p.h + 'px';
-    d.style.background = p.bg;
-    d.style.color = p.fg;
-    const label = document.createElement('span');
-    label.textContent = p.kg;
-    d.append(label);
-    return d;
+function render() {
+  $('round').textContent = `${round + 1}/5`;
+  $('moves').textContent = moves;
+  $('score').textContent = score;
+  $('target').textContent = targets[round] + ' kg';
+  $('current').textContent = weight() + ' kg';
+
+  $('undo').disabled = !active || !stack.length;
+
+  for (const b of $('rack').children) {
+    b.disabled = !active;
   }
 
-  function buildRack() {
-    rack.replaceChildren(...PLATES.map((p) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'rack-plate';
-      b.style.background = p.bg;
-      b.style.color = p.fg;
-      b.setAttribute('aria-label', 'Add ' + p.kg + ' kg plate to both sides');
-      b.innerHTML = p.kg + '<small>kg</small>';
-      b.addEventListener('click', () => addPlate(p.kg));
-      return b;
-    }));
-  }
+  visual(stack);
+}
 
-  function plateByKg(kg) {
-    return PLATES.find((p) => p.kg === kg);
-  }
+// ==============================
+// TIMER
+// ==============================
 
-  function renderBar() {
-    leftSide.replaceChildren(...stack.map((kg) => plateNode(plateByKg(kg))));
-    rightSide.replaceChildren(...stack.map((kg) => plateNode(plateByKg(kg))));
-    const w = weightOnBar();
-    currentEl.textContent = fmt(w);
-    movesEl.textContent = moves;
-    undoBtn.disabled = !active || stack.length === 0;
-    rack.querySelectorAll('button').forEach((b) => { b.disabled = !active; });
-  }
+function tick() {
+  remaining = Math.max(
+    0,
+    (deadline - performance.now()) / 1000
+  );
 
-  function setStatus(w, target) {
-    const box = currentEl.parentElement;
-    box.classList.remove('over', 'done');
-    hintEl.classList.remove('over', 'good');
-    if (w === target) {
-      box.classList.add('done');
-    } else if (w > target) {
-      box.classList.add('over');
-      hintEl.classList.add('over');
-      hintEl.textContent = 'Over by ' + fmt(w - target) + '. Tap Undo to remove a plate pair.';
-    } else {
-      hintEl.textContent = 'Need ' + fmt(target - w) + ' more.';
-    }
-  }
+  $('time').textContent = remaining.toFixed(1);
 
-  function addPlate(kg) {
-    if (!active) return;
-    if (stack.length >= MAX_PER_SIDE) {
-      hintEl.classList.add('over');
-      hintEl.textContent = 'The sleeves are full. Tap Undo to remove a plate pair.';
+  $('fill').style.transform =
+    `scaleX(${remaining / 30})`;
+
+  if (!remaining && active) {
+    endRound(false);
+  }
+}
+
+// ==============================
+// ADD / REMOVE WEIGHT PLATES
+// ==============================
+
+function change(kg) {
+  if (!active) return;
+
+  tick();
+
+  if (!active) return;
+
+  if (kg === null) {
+    if (!stack.length) return;
+
+    stack.pop();
+  } else {
+    if (stack.length >= 8) {
+      $('hint').textContent =
+        'Sleeves full. Undo a plate pair.';
+
       return;
     }
+
     stack.push(kg);
-    moves++;
-    afterChange();
   }
 
-  function undo() {
-    if (!active || stack.length === 0) return;
-    stack.pop();
-    moves++;
-    afterChange();
+  moves++;
+
+  render();
+
+  const delta = targets[round] - weight();
+
+  if (!delta) {
+    endRound(true);
+  } else {
+    $('hint').textContent = delta > 0
+      ? `${delta} kg to go!`
+      : `${-delta} kg too much. Try Undo.`;
+  }
+}
+
+// ==============================
+// END ROUND
+// ==============================
+
+function endRound(ok) {
+  active = false;
+
+  clearInterval(timer);
+
+  const p = par(targets[round]);
+
+  const points = ok
+    ? Math.max(
+        0,
+        500 - 50 * Math.max(0, moves - p)
+      ) + Math.round(remaining * 10)
+    : 0;
+
+  score += points;
+
+  results.push(
+    `${targets[round]} kg — ${
+      ok
+        ? moves + ' moves (par ' + p + ')'
+        : 'Time up'
+    } — ${points} pts`
+  );
+
+  render();
+
+  $('hint').textContent = ok
+    ? `Great load! +${points} points`
+    : 'Time up. Keep going!';
+
+  if (ok) {
   }
 
-  function afterChange() {
-    const target = TARGETS[roundIndex];
-    renderBar();
-    setStatus(weightOnBar(), target);
-    if (weightOnBar() === target) winRound();
+  next = setTimeout(() => {
+    if (round === 4) {
+      finish();
+    } else {
+      round++;
+      startRound();
+    }
+  }, 1500);
+}
+
+// ==============================
+// START ROUND
+// ==============================
+
+function startRound() {
+  clearInterval(timer);
+  clearTimeout(next);
+
+  stack = [];
+  moves = 0;
+  active = true;
+
+  deadline = performance.now() + 30000;
+
+  render();
+
+  $('hint').textContent = `Load ${targets[round]} kg!`;
+
+  tick();
+
+  timer = setInterval(tick, 100);
+}
+
+// ==============================
+// FINISH GAME
+// ==============================
+
+function finish() {
+  if (score > best) {
+    best = score;
+
+    try {
+      localStorage.setItem(
+        'loadTheBarbell.best3d',
+        best
+      );
+    } catch {}
   }
 
-  function startTimer() {
-    roundStart = performance.now();
-    timeLeft = ROUND_TIME;
-    updateTimeUI();
-    timerId = setInterval(() => {
-      timeLeft = Math.max(0, ROUND_TIME - (performance.now() - roundStart) / 1000);
-      updateTimeUI();
-      if (timeLeft <= 0) timeUp();
-    }, 100);
-  }
+  $('best').textContent = best;
 
-  function stopTimer() {
-    clearInterval(timerId);
-    timerId = null;
-  }
+  $('title').textContent = 'Session complete';
 
-  function updateTimeUI() {
-    timeLeftEl.textContent = timeLeft.toFixed(1);
-    timeFill.style.transform = 'scaleX(' + (timeLeft / ROUND_TIME) + ')';
-    timeFill.classList.toggle('low', timeLeft <= 8);
-  }
+  $('message').textContent =
+    `${score} points — Well played!`;
 
-  // Score: 500 for the right weight, minus 50 for each move above par,
-  // plus 10 points for every second left on the clock.
-  function roundScore(par) {
-    const extra = Math.max(0, moves - par);
-    return Math.max(0, 500 - extra * 50) + Math.round(timeLeft * 10);
-  }
-
-  function winRound() {
-    stopTimer();
-    active = false;
-    const target = TARGETS[roundIndex];
-    const par = parMoves(target);
-    const score = roundScore(par);
-    totalScore += score;
-    totalEl.textContent = totalScore;
-    results.push({ target, moves, par, score, ok: true });
-
-    hintEl.classList.remove('over');
-    hintEl.classList.add('good');
-    hintEl.textContent = moves <= par
-      ? 'Perfect load! ' + moves + ' moves, +' + score + ' pts.'
-      : 'Lifted! ' + moves + ' moves (par ' + par + '), +' + score + ' pts.';
-
-    renderBar();
-    nextRoundSoon();
-  }
-
-  function timeUp() {
-    stopTimer();
-    active = false;
-    const target = TARGETS[roundIndex];
-    results.push({ target, moves, par: parMoves(target), score: 0, ok: false });
-    hintEl.classList.remove('good');
-    hintEl.classList.add('over');
-    hintEl.textContent = 'Time up! The target was ' + fmt(target) + '.';
-    renderBar();
-    nextRoundSoon();
-  }
-
-  function nextRoundSoon() {
-    setTimeout(() => {
-      roundIndex++;
-      if (roundIndex >= TARGETS.length) finishSession();
-      else startRound();
-    }, NEXT_ROUND_DELAY);
-  }
-
-  function startRound() {
-    stack = [];
-    moves = 0;
-    active = true;
-    const target = TARGETS[roundIndex];
-    roundEl.textContent = (roundIndex + 1) + '/' + TARGETS.length;
-    targetEl.textContent = fmt(target);
-    currentEl.parentElement.classList.remove('over', 'done');
-    hintEl.classList.remove('over', 'good');
-    hintEl.textContent = 'Tap a plate to load it on both sides. The empty bar weighs ' + BAR_WEIGHT + ' kg.';
-    renderBar();
-    setStatus(weightOnBar(), target);
-    startTimer();
-  }
-
-  function finishSession() {
-    const best = loadBest();
-    const isNewBest = totalScore > 0 && (!best || totalScore > best.score);
-    if (isNewBest) saveBest(totalScore);
-
-    el('finalScore').textContent = totalScore;
-    el('newBest').hidden = !isNewBest;
-    el('breakdown').replaceChildren(...results.map((r) => {
+  $('results').replaceChildren(
+    ...results.map(s => {
       const li = document.createElement('li');
-      const left = document.createElement('span');
-      left.textContent = fmt(r.target);
-      const mid = document.createElement('span');
-      mid.className = 'muted';
-      mid.textContent = r.ok ? r.moves + ' moves (par ' + r.par + ')' : 'Time up';
-      const right = document.createElement('span');
-      right.textContent = r.score + ' pts';
-      li.append(left, mid, right);
+
+      li.textContent = s;
+
       return li;
-    }));
-    showBest();
-    endModal.hidden = false;
-    el('playAgain').focus();
+    })
+  );
+
+  $('start').textContent = 'Play again';
+
+  $('modal').showModal();
+}
+
+// ==============================
+// RESTART GAME
+// ==============================
+
+function restart() {
+  clearTimeout(next);
+  clearInterval(timer);
+
+  round = 0;
+  score = 0;
+  results = [];
+
+  if ($('modal').open) {
+    $('modal').close();
   }
 
-  function newSession() {
-    stopTimer();
-    roundIndex = 0;
-    totalScore = 0;
-    results = [];
-    totalEl.textContent = '0';
-    endModal.hidden = true;
-    startModal.hidden = true;
-    showBest();
-    startRound();
-  }
+  startRound();
+}
 
-  function init() {
-    buildRack();
-    showBest();
-    targetEl.textContent = fmt(TARGETS[0]);
-    roundEl.textContent = '1/' + TARGETS.length;
-    renderBar();
-    undoBtn.addEventListener('click', undo);
-    el('restart').addEventListener('click', newSession);
-    el('playAgain').addEventListener('click', newSession);
-    el('startBtn').addEventListener('click', newSession);
-    el('startBtn').focus();
-  }
+// ==============================
+// CREATE WEIGHT BUTTONS
+// ==============================
 
-  init();
+for (const [kg, color] of plates) {
+  const b = document.createElement('button');
+
+  b.className = 'plate';
+
+  b.style.background =
+    '#' + color.toString(16).padStart(6, '0');
+
+  b.style.color = [15, 5, 1.25].includes(kg)
+    ? '#0b1626'
+    : 'white';
+
+  b.innerHTML = `${kg}<small>kg</small>`;
+
+  b.setAttribute(
+    'aria-label',
+    `Add ${kg} kilogram plate to both sides`
+  );
+
+  b.onclick = () => change(kg);
+
+  $('rack').append(b);
+}
+
+// ==============================
+// EVENT LISTENERS
+// ==============================
+
+$('undo').onclick = () => change(null);
+
+$('restart').onclick = restart;
+
+$('start').onclick = restart;
+
+$('modal').addEventListener('cancel', e => {
+  e.preventDefault();
+});
+
+render();
+
+$('modal').showModal();
+
+// ==============================
+// THREE.JS — 3D ENVIRONMENT
+// ==============================
+
+(async () => {
+  try {
+
+    // Import Three.js from CDN
+
+    const T = await import(
+      'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js'
+    );
+
+    const host = $('scene');
+
+    // Create scene
+
+    const scene = new T.Scene();
+
+    // Create perspective camera
+
+    const camera = new T.PerspectiveCamera(
+      36,
+      1,
+      0.1,
+      100
+    );
+
+    camera.position.set(3, 3.2, 12);
+
+    camera.lookAt(0, 1.3, 0);
+
+    // Create WebGL renderer
+
+    const renderer = new T.WebGLRenderer({
+      alpha: true,
+      antialias: true
+    });
+
+    renderer.setPixelRatio(
+      Math.min(devicePixelRatio, 1.75)
+    );
+
+    host.append(renderer.domElement);
+
+    // ==============================
+    // LIGHTING
+    // ==============================
+
+    const ambientLight = new T.HemisphereLight(
+      0xffffff,
+      0x53627a,
+      2.4
+    );
+
+    scene.add(ambientLight);
+
+    const light = new T.DirectionalLight(
+      0xffffff,
+      3
+    );
+
+    light.position.set(3, 6, 5);
+
+    scene.add(light);
+
+    const rim = new T.DirectionalLight(
+      0x8cbaff,
+      2
+    );
+
+    rim.position.set(-4, 3, -4);
+
+    scene.add(rim);
+
+    // ==============================
+    // CREATE 3D BARBELL
+    // ==============================
+
+    const bar = new T.Group();
+
+    bar.position.y = 0.65;
+
+    scene.add(bar);
+
+    // Metallic steel material
+
+    const steel = new T.MeshStandardMaterial({
+      color: 0xbfcbd6,
+      metalness: 0.75,
+      roughness: 0.24
+    });
+
+    const goldSteel = new T.MeshStandardMaterial({
+      color: 0xe3b341,
+      metalness: 0.82,
+      roughness: 0.2
+    });
+
+    // Cylinder creation helper
+
+    function cylinder(
+      radius,
+      length,
+      material,
+      x
+    ) {
+      const geometry = new T.CylinderGeometry(
+        radius,
+        radius,
+        length,
+        48
+      );
+
+      const mesh = new T.Mesh(
+        geometry,
+        material
+      );
+
+      mesh.rotation.z = Math.PI / 2;
+
+      mesh.position.x = x;
+
+      return mesh;
+    }
+
+    // Gold bar shaft
+
+    bar.add(
+      cylinder(0.075, 7, goldSteel, 0)
+    );
+
+    // Left and right sleeves
+
+    for (const s of [-1, 1]) {
+      bar.add(
+        cylinder(
+          0.13,
+          2.25,
+          steel,
+          s * 2.35
+        )
+      );
+
+      // Barbell collars
+
+      bar.add(
+        cylinder(
+          0.22,
+          0.12,
+          steel,
+          s * 1.18
+        )
+      );
+    }
+
+    // Group containing loaded plates
+
+    const loaded = new T.Group();
+
+    bar.add(loaded);
+
+    const reduced = matchMedia(
+      '(prefers-reduced-motion: reduce)'
+    ).matches;
+
+    let previous = [];
+
+    // ==============================
+    // RENDER 3D WEIGHT PLATES
+    // ==============================
+
+    visual = values => {
+      // Remove previous plate meshes
+
+      while (loaded.children.length) {
+        const mesh = loaded.children[0];
+
+        loaded.remove(mesh);
+
+        mesh.geometry.dispose();
+
+        mesh.material.dispose();
+      }
+
+      // Create new weight plates
+
+      values.forEach((kg, i) => {
+
+        const color = plates.find(
+          p => p[0] === kg
+        )[1];
+
+        // Add plates to both sides
+
+        for (const s of [-1, 1]) {
+
+          const material =
+            new T.MeshStandardMaterial({
+              color: color,
+              roughness: 0.38,
+              metalness: 0.15
+            });
+
+          // Plate sizes based on weight
+
+          const radius =
+            kg >= 10
+              ? 0.62
+              : kg >= 5
+                ? 0.45
+                : kg >= 2.5
+                  ? 0.33
+                  : 0.25;
+
+          const x = s * (1.36 + i * 0.25);
+
+          const mesh = cylinder(
+            radius,
+            0.22,
+            material,
+            x
+          );
+
+          mesh.userData.target = x;
+
+          // Slide new plates onto the bar
+
+          if (!reduced && i >= previous.length) {
+            mesh.position.x = x + s * 0.7;
+          }
+
+          loaded.add(mesh);
+        }
+      });
+
+      previous = [...values];
+    };
+
+    // ==============================
+    // RESPONSIVE 3D CANVAS
+    // ==============================
+
+    function resize() {
+      const w = host.clientWidth;
+
+      const h = host.clientHeight;
+
+      renderer.setSize(w, h, false);
+
+      camera.aspect = w / h;
+
+      camera.position.z = Math.max(
+        12,
+        12 / camera.aspect
+      );
+
+      camera.lookAt(0, 1.3, 0);
+
+      camera.updateProjectionMatrix();
+    }
+
+    new ResizeObserver(resize).observe(host);
+
+    resize();
+
+    visual(stack);
+
+    // ==============================
+    // ANIMATION LOOP
+    // ==============================
+
+    renderer.setAnimationLoop(() => {
+
+      // Animate plates sliding onto barbell
+
+      for (const mesh of loaded.children) {
+        mesh.position.x += (
+          mesh.userData.target -
+          mesh.position.x
+        ) * 0.18;
+      }
+
+      // Render every frame
+
+      renderer.render(scene, camera);
+    });
+
+  } catch (error) {
+
+    // Keep game playable if WebGL fails
+
+    $('fallback').hidden = false;
+
+    console.warn('3D unavailable', error);
+  }
 })();
