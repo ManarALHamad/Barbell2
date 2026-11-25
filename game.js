@@ -2,7 +2,6 @@
    Tap a plate to load it on both sides of the bar. Reach the target weight
    with the fewest moves before the 30 second timer runs out.
    Edit LOGO_SRC, TARGETS and the timings below to tune the game. */
-
 (() => {
   'use strict';
 
@@ -45,6 +44,8 @@
   const undoBtn = el('undo');
   const startModal = el('startModal');
   const endModal = el('endModal');
+  const bar3d = el('bar3d');
+  const barWrap = document.querySelector('.bar-wrap');
 
   let roundIndex = 0;
   let stack = [];            // plate weights loaded, one entry per pair
@@ -55,6 +56,7 @@
   let timerId = null;
   let roundStart = 0;
   let timeLeft = ROUND_TIME;
+  let updateThreeBar = () => {};
 
   // Logo with graceful fallback
   ['logo', 'startLogo', 'endLogo'].forEach((id) => {
@@ -128,11 +130,182 @@
   function renderBar() {
     leftSide.replaceChildren(...stack.map((kg) => plateNode(plateByKg(kg))));
     rightSide.replaceChildren(...stack.map((kg) => plateNode(plateByKg(kg))));
+    updateThreeBar(stack);
     const w = weightOnBar();
     currentEl.textContent = fmt(w);
     movesEl.textContent = moves;
     undoBtn.disabled = !active || stack.length === 0;
     rack.querySelectorAll('button').forEach((b) => { b.disabled = !active; });
+  }
+
+  async function initThreeBarbell() {
+    try {
+      const THREE = await import(
+        'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js'
+      );
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
+      camera.position.set(3.1, 2.7, 6.2);
+      camera.lookAt(0, 0, 0);
+
+      const renderer = new THREE.WebGLRenderer({
+        alpha: true,
+        antialias: true
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+      renderer.setClearColor(0x000000, 0);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      bar3d.replaceChildren(renderer.domElement);
+
+      scene.add(new THREE.HemisphereLight(0xe6f0ff, 0x26364b, 2.1));
+
+      const keyLight = new THREE.DirectionalLight(0xffffff, 3.2);
+      keyLight.position.set(-3, 7, 5);
+      keyLight.castShadow = true;
+      scene.add(keyLight);
+
+      const rimLight = new THREE.DirectionalLight(0x9fc4ff, 1.4);
+      rimLight.position.set(4, 3, -5);
+      scene.add(rimLight);
+
+      const platform = new THREE.Mesh(
+        new THREE.CylinderGeometry(4.7, 4.85, 0.16, 64),
+        new THREE.MeshStandardMaterial({
+          color: 0x17283d,
+          metalness: 0.32,
+          roughness: 0.62
+        })
+      );
+      platform.position.y = -1.02;
+      platform.receiveShadow = true;
+      scene.add(platform);
+
+      const barbell = new THREE.Group();
+      scene.add(barbell);
+
+      const goldSteel = new THREE.MeshStandardMaterial({
+        color: 0xe3b341,
+        metalness: 0.82,
+        roughness: 0.22
+      });
+      const sleeveSteel = new THREE.MeshStandardMaterial({
+        color: 0xaab8c8,
+        metalness: 0.85,
+        roughness: 0.24
+      });
+      const gripSteel = new THREE.MeshStandardMaterial({
+        color: 0x526174,
+        metalness: 0.45,
+        roughness: 0.4
+      });
+
+      function horizontalCylinder(radius, length, material, x = 0, y = 0) {
+        const mesh = new THREE.Mesh(
+          new THREE.CylinderGeometry(radius, radius, length, 48),
+          material
+        );
+        mesh.rotation.z = Math.PI / 2;
+        mesh.position.set(x, y, 0);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        return mesh;
+      }
+
+      // A metallic gold shaft, with a short textured grip and steel sleeves.
+      barbell.add(horizontalCylinder(0.075, 7.5, goldSteel));
+      barbell.add(horizontalCylinder(0.088, 1.25, gripSteel));
+      for (const side of [-1, 1]) {
+        barbell.add(horizontalCylinder(0.13, 2.1, sleeveSteel, side * 3.45));
+        barbell.add(horizontalCylinder(0.2, 0.12, goldSteel, side * 1.72));
+      }
+
+      const loadedPlates = new THREE.Group();
+      barbell.add(loadedPlates);
+
+      function clearLoadedPlates() {
+        while (loadedPlates.children.length) {
+          const object = loadedPlates.children[0];
+          loadedPlates.remove(object);
+          object.userData.materials?.forEach((material) => material.dispose());
+          object.traverse((child) => {
+            child.geometry?.dispose();
+          });
+        }
+      }
+
+      const reducedMotion = window.matchMedia(
+        '(prefers-reduced-motion: reduce)'
+      ).matches;
+
+      updateThreeBar = (weights) => {
+        clearLoadedPlates();
+
+        weights.forEach((kg, index) => {
+          const spec = plateByKg(kg);
+          const radius = 0.37 + (spec.h / 100) * 0.34;
+          const plateMaterial = new THREE.MeshStandardMaterial({
+            color: spec.bg,
+            metalness: 0.16,
+            roughness: 0.34
+          });
+          const pair = new THREE.Group();
+          if (!reducedMotion) pair.scale.setScalar(0.08);
+
+          for (const side of [-1, 1]) {
+            const x = side * (1.88 + index * 0.245);
+            const disk = new THREE.Mesh(
+              new THREE.CylinderGeometry(radius, radius, 0.22, 48),
+              plateMaterial
+            );
+            disk.rotation.z = Math.PI / 2;
+            disk.position.x = x;
+            disk.castShadow = true;
+            disk.receiveShadow = true;
+            pair.add(disk);
+
+            const hub = horizontalCylinder(
+              radius * 0.24,
+              0.25,
+              sleeveSteel,
+              x
+            );
+            pair.add(hub);
+          }
+
+          pair.userData.materials = [plateMaterial];
+          loadedPlates.add(pair);
+        });
+      };
+
+      const unitScale = new THREE.Vector3(1, 1, 1);
+
+      function resize() {
+        const width = Math.max(1, bar3d.clientWidth);
+        const height = Math.max(1, bar3d.clientHeight);
+        renderer.setSize(width, height, false);
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+      }
+
+      const resizeObserver = new ResizeObserver(resize);
+      resizeObserver.observe(bar3d);
+      resize();
+      updateThreeBar(stack);
+
+      renderer.setAnimationLoop(() => {
+        if (!reducedMotion) {
+          for (const pair of loadedPlates.children) {
+            pair.scale.lerp(unitScale, 0.18);
+          }
+        }
+        renderer.render(scene, camera);
+      });
+      barWrap.classList.add('webgl-ready');
+    } catch (error) {
+      console.warn('3D barbell could not be initialized; using the flat fallback.', error);
+    }
   }
 
   function setStatus(w, target) {
@@ -310,4 +483,5 @@
   }
 
   init();
+  initThreeBarbell();
 })();

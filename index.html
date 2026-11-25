@@ -44,7 +44,8 @@
     <p id="hint" class="hint" aria-live="polite">Tap a plate to load it on both sides. The empty bar weighs 20 kg.</p>
 
     <section class="bar-wrap" aria-label="Barbell">
-      <div class="bar">
+      <div id="bar3d" class="bar3d" aria-label="Three-dimensional barbell"></div>
+      <div id="barFallback" class="bar" aria-hidden="true">
         <div id="leftSide" class="sleeve left"></div>
         <div class="grip"></div>
         <div id="rightSide" class="sleeve right"></div>
@@ -79,6 +80,6 @@
     </div>
   </div>
 
-  <script src="game.js"></script>
+  <script type="module" src="game.js"></script>
 </body>
 </html>
