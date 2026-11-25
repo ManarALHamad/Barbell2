@@ -11,6 +11,7 @@
   const ROUND_TIME = 30;          // seconds per round
   const MAX_PER_SIDE = 8;         // plates that fit on one sleeve
   const TARGETS = [60, 80, 100, 120, 135];  // kg, one per round
+  const SESSION_WINS_REQUIRED = 3;
   const NEXT_ROUND_DELAY = 1500;  // ms pause between rounds
 
   // Plate weights in kg, with standard competition colours
@@ -434,10 +435,16 @@
   }
 
   function finishSession() {
+    const wins = results.filter((result) => result.ok).length;
+    const sessionWon = wins >= SESSION_WINS_REQUIRED;
     const best = loadBest();
     const isNewBest = totalScore > 0 && (!best || totalScore > best.score);
     if (isNewBest) saveBest(totalScore);
 
+    el('endTitle').textContent = sessionWon ? 'You win!' : 'Try again';
+    el('sessionSummary').textContent = sessionWon
+      ? `You won ${wins} of ${TARGETS.length} rounds. Great lifting!`
+      : `You won ${wins} of ${TARGETS.length} rounds. Win ${SESSION_WINS_REQUIRED} rounds to take the session.`;
     el('finalScore').textContent = totalScore;
     el('newBest').hidden = !isNewBest;
     el('breakdown').replaceChildren(...results.map((r) => {
