@@ -1,7 +1,7 @@
 /* Load the Barbell
    Tap a plate to load it on both sides of the bar. Reach the target weight
    with the fewest moves before the 30 second timer runs out.
-   Edit LOGO_SRC, TARGETS and the timings below to tune the game. */
+   Edit LOGO_SRC and the timings below to tune the game. */
 (() => {
   'use strict';
 
@@ -10,8 +10,6 @@
   const BAR_WEIGHT = 20;          // kg, empty bar
   const ROUND_TIME = 30;          // seconds per round
   const MAX_PER_SIDE = 8;         // plates that fit on one sleeve
-  const TARGETS = [60, 80, 100, 120, 135];  // kg, one per round
-  const SESSION_WINS_REQUIRED = 3;
   const NEXT_ROUND_DELAY = 1500;  // ms pause between rounds
 
   // Plate weights in kg, with standard competition colours
@@ -49,6 +47,7 @@
   const barWrap = document.querySelector('.bar-wrap');
 
   let roundIndex = 0;
+  let targets = [];
   let stack = [];            // plate weights loaded, one entry per pair
   let moves = 0;
   let totalScore = 0;
@@ -79,6 +78,35 @@
       }
     }
     return best[units];
+  }
+
+  // Pick a fresh reachable set each session, with difficulty rising by round.
+  function makeTargets() {
+    const tiers = [
+      { minPar: 2, maxPar: 3, count: 2 },
+      { minPar: 4, maxPar: 5, count: 2 },
+      { minPar: 6, maxPar: 7, count: 1 }
+    ];
+    const candidates = [];
+    for (let units = 1; units <= MAX_PER_SIDE * 20; units++) {
+      const target = BAR_WEIGHT + 2 * units * UNIT;
+      const par = parMoves(target);
+      if (par <= MAX_PER_SIDE) candidates.push({ target, par });
+    }
+    const chosen = [];
+    for (const tier of tiers) {
+      const pool = candidates.filter((item) =>
+        item.par >= tier.minPar && item.par <= tier.maxPar &&
+        !chosen.some((selected) => selected.target === item.target)
+      );
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      chosen.push(...pool.slice(0, tier.count));
+    }
+    return chosen.sort((a, b) => a.par - b.par || a.target - b.target)
+      .map((item) => item.target);
   }
 
   const weightOnBar = () => BAR_WEIGHT + 2 * stack.reduce((sum, kg) => sum + kg, 0);
@@ -344,7 +372,7 @@
   }
 
   function afterChange() {
-    const target = TARGETS[roundIndex];
+    const target = targets[roundIndex];
     renderBar();
     setStatus(weightOnBar(), target);
     if (weightOnBar() === target) winRound();
@@ -382,7 +410,7 @@
   function winRound() {
     stopTimer();
     active = false;
-    const target = TARGETS[roundIndex];
+    const target = targets[roundIndex];
     const par = parMoves(target);
     const score = roundScore(par);
     totalScore += score;
@@ -402,7 +430,7 @@
   function timeUp() {
     stopTimer();
     active = false;
-    const target = TARGETS[roundIndex];
+    const target = targets[roundIndex];
     results.push({ target, moves, par: parMoves(target), score: 0, ok: false });
     hintEl.classList.remove('good');
     hintEl.classList.add('over');
@@ -414,7 +442,7 @@
   function nextRoundSoon() {
     setTimeout(() => {
       roundIndex++;
-      if (roundIndex >= TARGETS.length) finishSession();
+      if (roundIndex >= targets.length) finishSession();
       else startRound();
     }, NEXT_ROUND_DELAY);
   }
@@ -423,8 +451,8 @@
     stack = [];
     moves = 0;
     active = true;
-    const target = TARGETS[roundIndex];
-    roundEl.textContent = (roundIndex + 1) + '/' + TARGETS.length;
+    const target = targets[roundIndex];
+    roundEl.textContent = (roundIndex + 1) + '/' + targets.length;
     targetEl.textContent = fmt(target);
     currentEl.parentElement.classList.remove('over', 'done');
     hintEl.classList.remove('over', 'good');
@@ -436,15 +464,15 @@
 
   function finishSession() {
     const wins = results.filter((result) => result.ok).length;
-    const sessionWon = wins >= SESSION_WINS_REQUIRED;
+    const sessionWon = wins === targets.length;
     const best = loadBest();
     const isNewBest = totalScore > 0 && (!best || totalScore > best.score);
     if (isNewBest) saveBest(totalScore);
 
     el('endTitle').textContent = sessionWon ? 'You win!' : 'Try again';
     el('sessionSummary').textContent = sessionWon
-      ? `You won ${wins} of ${TARGETS.length} rounds. Great lifting!`
-      : `You won ${wins} of ${TARGETS.length} rounds. Win ${SESSION_WINS_REQUIRED} rounds to take the session.`;
+      ? `You won ${wins} of ${targets.length} rounds. Great lifting!`
+      : `You won ${wins} of ${targets.length} rounds. Win all ${targets.length} rounds to take the session.`;
     el('finalScore').textContent = totalScore;
     el('newBest').hidden = !isNewBest;
     el('breakdown').replaceChildren(...results.map((r) => {
@@ -467,6 +495,7 @@
   function newSession() {
     stopTimer();
     roundIndex = 0;
+    targets = makeTargets();
     totalScore = 0;
     results = [];
     totalEl.textContent = '0';
@@ -479,8 +508,9 @@
   function init() {
     buildRack();
     showBest();
-    targetEl.textContent = fmt(TARGETS[0]);
-    roundEl.textContent = '1/' + TARGETS.length;
+    targets = makeTargets();
+    roundEl.textContent = '1/' + targets.length;
+    targetEl.textContent = fmt(targets[0]);
     renderBar();
     undoBtn.addEventListener('click', undo);
     el('restart').addEventListener('click', newSession);
